@@ -150,6 +150,3 @@ Test scenarios: auto-approve, high-value review, PII in description, prompt inje
 
 Results are written to `artifacts/grade_results/grade_report.json`.
 
-## License
-
-This project is part of a Google Vibe Coding Course lab exercise on Kaggle.
