@@ -100,6 +100,3 @@ All configuration lives in `expense_agent/config.py`:
 | `MODEL` | `deepseek/deepseek-chat` | LLM used for risk assessment |
 | `LLM_INSTRUCTION` | (built-in) | System prompt for the risk analyst role |
 
-## License
-
-This project is part of a Google Vibe Coding Course lab exercise on Kaggle.
