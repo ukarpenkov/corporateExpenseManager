@@ -1,0 +1,15 @@
+[project]
+name = "ambient-expense-agent"
+version = "0.1.0"
+description = "Ambient expense-approval agent built with ADK 2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "google-adk>=2.0.0a0",
+    "litellm",
+    "fastapi",
+    "uvicorn",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
