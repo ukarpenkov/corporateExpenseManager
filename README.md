@@ -15,13 +15,16 @@ An event-driven corporate expense approval agent built with Google Agent Develop
 
 ```
 expense_agent/
-  agent.py          — Graph workflow: nodes, edges, routing, security screening
-  config.py         — Configuration (threshold, model, LLM instruction)
-  fast_api_app.py   — FastAPI entry point for ambient event handling
+  agent.py              — Graph workflow: nodes, edges, routing, security screening
+  config.py             — Configuration (threshold, model, LLM instruction)
+  fast_api_app.py       — FastAPI entry point for ambient event handling
+  agent_runtime_app.py  — Agent Runtime entry point for Google Cloud deployment
   __init__.py
-Makefile            — Build/run targets
-pyproject.toml      — Project metadata and dependencies
-.env                — API key configuration (not committed)
+Makefile                — Build/run targets
+pyproject.toml          — Project metadata and dependencies
+.env                    — API key configuration (not committed)
+Dockerfile              — Docker container definition for deployment
+deployment_metadata.json — Agent Runtime deployment configuration
 ```
 
 ## Graph Workflow

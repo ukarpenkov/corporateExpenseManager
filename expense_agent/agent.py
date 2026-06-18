@@ -76,7 +76,7 @@ def security_screen(node_input):
                     "recommendation": "reject",
                     "cleaned_description": cleaned,
                     "redacted_pii": pii_found,
-                    "expense": node_input,
+                    "expense": {**node_input, "description": cleaned} if isinstance(node_input, dict) else cleaned,
                 },
                 route="injection",
             )
@@ -86,7 +86,7 @@ def security_screen(node_input):
             "flag": "clean",
             "cleaned_description": cleaned,
             "redacted_pii": pii_found,
-            "expense": node_input,
+            "expense": {**node_input, "description": cleaned} if isinstance(node_input, dict) else cleaned,
         },
         route="clean",
     )

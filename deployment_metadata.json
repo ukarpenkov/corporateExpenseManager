@@ -1,0 +1,16 @@
+{
+  "runtime": "agent_runtime",
+  "entry_point": "expense_agent.agent_runtime_app:app",
+  "python_version": "3.11",
+  "region": "us-west1",
+  "trigger": {
+    "type": "pubsub",
+    "topic": "expense-notifications",
+    "subscription": "expense-notifications-sub"
+  },
+  "resources": {
+    "memory": "512Mi",
+    "cpu": "1",
+    "timeout": "300s"
+  }
+}
