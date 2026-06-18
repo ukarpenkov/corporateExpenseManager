@@ -1,3 +1,4 @@
 docs/*
 .env
 __pycache__/
+expense_agent/.adk/session.db
