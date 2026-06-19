@@ -1,18 +1,20 @@
 import os
+import json
+import logging
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-from google.adk.sessions import VertexAiSessionService
-from vertexai import Agent
 
-PROJECT_ID = os.environ["GCP_PROJECT_ID"]
-AGENT_RUNTIME_ID = os.environ["AGENT_RUNTIME_ID"]
-REGION = os.getenv("GCP_REGION", "us-central1")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+AGENT_URL = os.environ["AGENT_URL"]
+APP_NAME = os.getenv("APP_NAME", "expense_agent")
+USER_IDS = ["default-user", "pubsub", "system"]
 
 app = FastAPI(title="Manager Dashboard")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
-
-session_service = VertexAiSessionService(project=PROJECT_ID, location=REGION)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -22,15 +24,32 @@ async def dashboard():
 
 @app.get("/api/pending")
 async def get_pending():
-    sessions = await session_service.list_sessions(agent_id=AGENT_RUNTIME_ID)
-    pending = []
-    for session in sessions:
-        history = await session_service.get_history(
-            agent_id=AGENT_RUNTIME_ID,
-            user_id="default-user",
-            session_id=session.id,
-        )
-        pending += _find_interrupts(session.id, history)
+    async with httpx.AsyncClient(timeout=30) as client:
+        all_sessions = []
+        for uid in USER_IDS:
+            list_url = f"{AGENT_URL}/apps/{APP_NAME}/users/{uid}/sessions"
+            try:
+                resp = await client.get(list_url)
+                if resp.status_code == 200:
+                    sessions = resp.json()
+                    all_sessions.extend([(uid, s) for s in sessions])
+            except Exception:
+                pass
+
+        pending = []
+        for uid, session in all_sessions:
+            sid = session["id"]
+            hist_url = f"{AGENT_URL}/apps/{APP_NAME}/users/{uid}/sessions/{sid}"
+            try:
+                hist_resp = await client.get(hist_url)
+                if hist_resp.status_code != 200:
+                    continue
+                session_data = hist_resp.json()
+                events = session_data.get("events", [])
+                found = _find_interrupts(sid, events)
+                pending += found
+            except Exception:
+                pass
     return pending
 
 
@@ -40,46 +59,121 @@ async def take_action(session_id: str, request: Request):
     approved = body["approved"]
     interrupt_id = body["interrupt_id"]
     expense = body["expense"]
+    user_id = body.get("userId", "default-user")
 
-    message = {
-        "role": "user",
-        "parts": [
-            {
-                "function_response": {
-                    "id": interrupt_id,
-                    "name": "adk_request_input",
-                    "response": {"approved": approved, "expense": expense},
-                }
-            }
-        ],
+    decision = "approved" if approved else "rejected"
+    amount = expense.get("amount", 0)
+    submitter = expense.get("submitter", "")
+    category = expense.get("category", "")
+    description = expense.get("description", "")
+    date = expense.get("date", "")
+
+    message = (
+        f"Manager decision for expense: ${amount} {category} - {description} "
+        f"(submitted by {submitter}). Decision: {decision}. "
+        f"Please confirm this has been processed."
+    )
+
+    payload = {
+        "userId": user_id,
+        "sessionId": session_id,
+        "newMessage": {
+            "role": "user",
+            "parts": [{"text": message}],
+        },
     }
 
-    agent = Agent(model="gemini-2.0-flash", agent_id=AGENT_RUNTIME_ID)
-    await agent.run_async(
-        user_id="default-user",
-        session_id=session_id,
-        message=message,
-    )
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(f"{AGENT_URL}/run", json=payload)
+        if resp.status_code != 200:
+            return {"error": f"Agent returned {resp.status_code}"}
     return {"status": "ok", "approved": approved}
 
 
-def _find_interrupts(session_id: str, history: list) -> list:
+@app.post("/api/chat")
+async def chat(request: Request):
+    body = await request.json()
+    message = body.get("message", "")
+    session_id = body.get("sessionId", "")
+
+    if not session_id:
+        import uuid
+        session_id = f"chat-{uuid.uuid4().hex[:8]}"
+
+    payload = {
+        "userId": "default-user",
+        "sessionId": session_id,
+        "newMessage": {
+            "role": "user",
+            "parts": [{"text": message}],
+        },
+    }
+
+    reply_parts = []
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(f"{AGENT_URL}/run", json=payload)
+        if resp.status_code != 200:
+            return {"error": f"Agent returned {resp.status_code}", "sessionId": session_id}
+        events = resp.json()
+        for event in events:
+            for p in event.get("content", {}).get("parts", []):
+                if p.get("text"):
+                    reply_parts.append(p["text"])
+
+    reply_text = "\n".join(reply_parts) if reply_parts else "(no response)"
+    return {"reply": reply_text, "sessionId": session_id}
+
+
+def _find_interrupts(session_id: str, events: list) -> list:
     pending = []
     pending_inputs = {}
-    for event in history:
-        if hasattr(event, "function_call") and event.function_call.name == "adk_request_input":
-            pending_inputs[event.function_call.id] = event
-        if hasattr(event, "function_response") and event.function_response.name == "adk_request_input":
-            pending_inputs.pop(event.function_response.id, None)
+    submit_results = {}
+    approval_calls = set()
 
-    for interrupt_id, event in pending_inputs.items():
-        args = event.function_call.args
+    for idx, event in enumerate(events):
+        content = event.get("content", {})
+        parts = content.get("parts", []) if content else []
+        for part in parts:
+            fc = part.get("functionCall")
+            fr = part.get("functionResponse")
+            if fc and fc.get("name") == "adk_request_input":
+                pending_inputs[fc["id"]] = fc
+            if fr and fr.get("name") == "adk_request_input":
+                pending_inputs.pop(fr.get("id"), None)
+            if fc and fc.get("name") == "submit_expense":
+                submit_results[fc["id"]] = {"args": fc.get("args", {}), "responded": False}
+            if fr and fr.get("name") == "submit_expense":
+                resp = fr.get("response", {})
+                if isinstance(resp, dict):
+                    for k, v in submit_results.items():
+                        if not v["responded"]:
+                            v["responded"] = True
+                            v["result"] = resp
+                            break
+            if fc and fc.get("name") == "request_approval":
+                approval_calls.add(fc["id"])
+
+    for interrupt_id, fc in pending_inputs.items():
+        args = fc.get("args", {})
+        expense = args.get("expense", args)
         pending.append({
             "sessionId": session_id,
             "interruptId": interrupt_id,
-            "expense": args.get("expense", {}),
-            "reason": args.get("reason", ""),
+            "expense": expense if isinstance(expense, dict) else {},
+            "reason": args.get("reason", args.get("message", "")),
         })
+
+    for call_id, data in submit_results.items():
+        result = data.get("result", {})
+        if result.get("status") == "submitted_for_approval":
+            expense = result.get("expense", data.get("args", {}))
+            pending.append({
+                "sessionId": session_id,
+                "interruptId": call_id,
+                "expense": expense if isinstance(expense, dict) else {},
+                "reason": f"High-value expense (${expense.get('amount', '?')}) awaiting manager approval",
+            })
+
     return pending
 
 
@@ -163,6 +257,26 @@ header h1 span{color:var(--accent)}
 
 .fade-in{animation:fadeUp .4s ease both}
 @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+
+.chat-toggle{position:fixed;bottom:24px;right:24px;width:56px;height:56px;border-radius:50%;background:var(--accent);color:#fff;border:none;font-size:24px;cursor:pointer;box-shadow:0 4px 20px var(--accent-glow);z-index:90;transition:var(--transition);display:flex;align-items:center;justify-content:center}
+.chat-toggle:hover{transform:scale(1.08);box-shadow:0 6px 30px var(--accent-glow)}
+.chat-panel{position:fixed;bottom:90px;right:24px;width:380px;height:500px;background:#13131f;border:1px solid var(--card-border);border-radius:var(--radius);z-index:90;display:flex;flex-direction:column;transform:translateY(20px) scale(.95);opacity:0;pointer-events:none;transition:var(--transition);overflow:hidden}
+.chat-panel.open{transform:translateY(0) scale(1);opacity:1;pointer-events:all}
+.chat-header{padding:16px 20px;border-bottom:1px solid var(--card-border);display:flex;align-items:center;justify-content:space-between}
+.chat-header h3{font-size:.95rem;font-weight:600}
+.chat-header .dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.chat-messages{flex:1;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:10px}
+.chat-msg{max-width:85%;padding:10px 14px;border-radius:12px;font-size:.85rem;line-height:1.5;animation:fadeUp .3s ease both}
+.chat-msg.user{align-self:flex-end;background:var(--accent);color:#fff;border-bottom-right-radius:4px}
+.chat-msg.agent{align-self:flex-start;background:rgba(255,255,255,0.06);border:1px solid var(--card-border);border-bottom-left-radius:4px}
+.chat-msg.agent pre{margin:6px 0 0;padding:8px;background:rgba(0,0,0,.3);border-radius:6px;font-size:.75rem;overflow-x:auto;white-space:pre-wrap}
+.chat-input-area{padding:12px 16px;border-top:1px solid var(--card-border);display:flex;gap:8px}
+.chat-input-area input{flex:1;background:rgba(255,255,255,0.05);border:1px solid var(--card-border);border-radius:10px;padding:10px 14px;color:var(--text);font-family:inherit;font-size:.85rem;outline:none;transition:var(--transition)}
+.chat-input-area input:focus{border-color:var(--accent)}
+.chat-input-area button{background:var(--accent);color:#fff;border:none;border-radius:10px;padding:10px 16px;font-family:inherit;font-weight:600;font-size:.85rem;cursor:pointer;transition:var(--transition)}
+.chat-input-area button:hover{background:#5a4bd6}
+.chat-input-area button:disabled{opacity:.5;cursor:not-allowed}
 </style>
 </head>
 <body>
@@ -192,6 +306,21 @@ header h1 span{color:var(--accent)}
     <div class="status-badge" id="modal-status"></div>
     <pre id="modal-body"></pre>
     <button class="close-btn" onclick="closeModal()">Close</button>
+  </div>
+</div>
+
+<button class="chat-toggle" onclick="toggleChat()" id="chatBtn">💬</button>
+<div class="chat-panel" id="chatPanel">
+  <div class="chat-header">
+    <h3>Expense Agent</h3>
+    <div class="dot"></div>
+  </div>
+  <div class="chat-messages" id="chatMessages">
+    <div class="chat-msg agent">Hello! I'm your expense agent. Ask me anything about expenses, policies, or submit a new expense.</div>
+  </div>
+  <div class="chat-input-area">
+    <input type="text" id="chatInput" placeholder="Type a message..." onkeypress="if(event.key==='Enter')sendChat()"/>
+    <button onclick="sendChat()" id="chatSendBtn">Send</button>
   </div>
 </div>
 
@@ -285,6 +414,50 @@ async function load(){
 }
 load();
 setInterval(load,15000);
+
+let chatSessionId='';
+function toggleChat(){
+  document.getElementById('chatPanel').classList.toggle('open');
+  document.getElementById('chatInput').focus();
+}
+
+async function sendChat(){
+  const input=document.getElementById('chatInput');
+  const msg=input.value.trim();
+  if(!msg)return;
+  input.value='';
+
+  addChatMsg(msg,'user');
+  const sendBtn=document.getElementById('chatSendBtn');
+  sendBtn.disabled=true;
+
+  try{
+    const res=await fetch('/api/chat',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({message:msg,sessionId:chatSessionId})
+    });
+    const data=await res.json();
+    chatSessionId=data.sessionId||chatSessionId;
+    addChatMsg(data.reply||data.error||'(error)','agent');
+  }catch(e){
+    addChatMsg('Network error','agent');
+  }
+  sendBtn.disabled=false;
+}
+
+function addChatMsg(text,role){
+  const container=document.getElementById('chatMessages');
+  const div=document.createElement('div');
+  div.className='chat-msg '+role;
+  if(text.includes('```')||text.includes('{')){
+    div.innerHTML='<pre>'+text.replace(/</g,'&lt;')+'</pre>';
+  } else {
+    div.textContent=text;
+  }
+  container.appendChild(div);
+  container.scrollTop=container.scrollHeight;
+}
 </script>
 </body>
 </html>
