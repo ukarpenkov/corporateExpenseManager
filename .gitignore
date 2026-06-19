@@ -1,4 +1,22 @@
-docs/*
+# IDE and editor settings
+.claude/
+
+# Python virtual environment
+.venv/
+
+# Environment variables
 .env
+
+# Python bytecode
 __pycache__/
-expense_agent/.adk/session.db
+*.pyc
+*.pyo
+
+# ADK runtime artifacts
+expense_agent/.adk/
+
+# Build and evaluation artifacts
+artifacts/
+
+# Generated documentation
+docs/*

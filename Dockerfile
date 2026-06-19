@@ -9,4 +9,4 @@ COPY . .
 
 EXPOSE 8080
 
-CMD ["python", "-m", "expense_agent.agent_runtime_app"]
+CMD ["uvicorn", "expense_agent.agent_runtime_app:app", "--host", "0.0.0.0", "--port", "8080"]

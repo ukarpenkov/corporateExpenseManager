@@ -152,3 +152,7 @@ root_agent = Workflow(
         (llm_reviewer, human_approval),
     ],
 )
+
+from google.adk.apps import App
+
+app = App(root_agent=root_agent, name="expense_agent")

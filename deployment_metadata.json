@@ -1,16 +1,23 @@
 {
-  "runtime": "agent_runtime",
+  "runtime": "cloud_run",
   "entry_point": "expense_agent.agent_runtime_app:app",
   "python_version": "3.11",
-  "region": "us-west1",
+  "region": "us-central1",
+  "project": "project-045dea81-cef3-4b7e-a28",
+  "service_name": "corporateexpensemanager",
+  "url": "https://corporateexpensemanager-3sms5oeluq-uc.a.run.app",
   "trigger": {
     "type": "pubsub",
     "topic": "expense-notifications",
     "subscription": "expense-notifications-sub"
   },
   "resources": {
-    "memory": "512Mi",
+    "memory": "4Gi",
     "cpu": "1",
-    "timeout": "300s"
-  }
+    "min_instances": 1,
+    "max_instances": 10,
+    "concurrency": 8
+  },
+  "deployed_at": "2026-06-19T09:42:49Z",
+  "status": "ready"
 }
