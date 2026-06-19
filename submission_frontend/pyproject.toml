@@ -1,0 +1,15 @@
+[project]
+name = "manager-dashboard"
+version = "0.1.0"
+description = "Manager Dashboard for Corporate Expense Approvals"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "google-adk>=1.0.0",
+    "google-cloud-aiplatform>=1.68.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
